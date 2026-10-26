@@ -1,97 +1,102 @@
 services:
+  # Base de données
   db:
-    image: mariadb:12.0.2
+    image: mariadb:12.0.2                                        # image officielle (12.0.1 n'existe qu'en release candidate)
     environment:
-      MARIADB_DATABASE: wordpress
-      MARIADB_USER: wordpress
-      MARIADB_PASSWORD_FILE: /run/secrets/db_password
-      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
-    secrets: [db_password, db_root_password]
+      MARIADB_DATABASE: wordpress                                # base créée au premier démarrage
+      MARIADB_USER: wordpress                                    # utilisateur créé au premier démarrage
+      MARIADB_PASSWORD_FILE: /run/secrets/db_password            # mot de passe lu depuis le secret
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password  # mot de passe root lu depuis le secret
+    secrets: [db_password, db_root_password]                     # secrets montés dans /run/secrets/
     volumes:
-      - db_data:/var/lib/mysql
-    networks: [backend]
+      - db_data:/var/lib/mysql                                   # données persistantes de la base
+    networks: [backend]                                          # accessible uniquement par WordPress
     deploy:
       placement:
-        constraints: [node.role == manager]
+        constraints: [node.role == manager]                      # toujours sur le manager (volume local)
 
+  # WordPress sans serveur web
   wordpress:
-    image: wordpress:6.8.2-fpm-alpine
+    image: wordpress:6.8.2-fpm-alpine                            # image officielle imposée
     environment:
-      WORDPRESS_DB_HOST: db
-      WORDPRESS_DB_NAME: wordpress
-      WORDPRESS_DB_USER: wordpress
-      WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password
-    secrets: [db_password]
+      WORDPRESS_DB_HOST: db                                      # nom du service MariaDB par le DNS interne
+      WORDPRESS_DB_NAME: wordpress                               # base à utiliser
+      WORDPRESS_DB_USER: wordpress                               # utilisateur de la base
+      WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password       # mot de passe lu depuis le secret
+    secrets: [db_password]                                       # seul secret nécessaire à WordPress
     volumes:
-      - wp_data:/var/www/html
-    networks: [frontend, backend]
+      - wp_data:/var/www/html                                    # code + médias, partagés en NFS
+    networks: [frontend, backend]                                # reçoit nginx, parle à la base
     deploy:
-      replicas: 2
+      replicas: 2                                                # 2 instances pour la tolérance aux pannes
       placement:
-        constraints: [node.role == worker]
-        max_replicas_per_node: 1
+        constraints: [node.role == worker]                       # uniquement sur les workers
+        max_replicas_per_node: 1                                 # une instance par worker
 
+  # Nginx
   nginx:
-    image: nginx:1.28.0-alpine3.21
+    image: nginx:1.28.0-alpine3.21                               # image officielle imposée
     configs:
-      - source: nginx_conf
-        target: /etc/nginx/conf.d/default.conf
+      - source: nginx_conf                                       # config définie en bas du fichier
+        target: /etc/nginx/conf.d/default.conf                   # remplace la config par défaut
     volumes:
-      - wp_data:/var/www/html:ro
+      - wp_data:/var/www/html:ro                                 # fichiers WordPress en lecture seule
     ports:
-      - "80:80"
-    networks: [frontend]
+      - "80:80"                                                  # port 80 ouvert sur tous les nœuds
+    networks: [frontend]                                         # ne voit que WordPress
     deploy:
-      replicas: 2
+      replicas: 2                                                # 2 instances pour la disponibilité
       placement:
-        max_replicas_per_node: 1
+        max_replicas_per_node: 1                                 # sur 2 nœuds différents
 
+  # Swarmpit : interface web de visualisation du cluster
   swarmpit:
-    image: swarmpit/swarmpit:latest
+    image: swarmpit/swarmpit:latest                              # interface Swarmpit
     environment:
-      SWARMPIT_DB: http://swarmpit-db:5984
+      SWARMPIT_DB: http://swarmpit-db:5984                       # adresse de sa base CouchDB
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro             # lit l'état du Swarm via Docker
     ports:
-      - "888:8080"
-    networks: [swarmpit]
+      - "888:8080"                                               # accessible sur le port 888
+    networks: [swarmpit]                                         # réseau séparé du site
     deploy:
       placement:
-        constraints: [node.role == manager]
+        constraints: [node.role == manager]                      # seul le manager connaît tout le Swarm
 
+  # Base de données de Swarmpit
   swarmpit-db:
-    image: treehouses/couchdb:2.3.1
+    image: treehouses/couchdb:2.3.1                              # CouchDB compatible ARM64
     volumes:
-      - swarmpit_db:/opt/couchdb/data
-    networks: [swarmpit]
+      - swarmpit_db:/opt/couchdb/data                            # données persistantes de Swarmpit
+    networks: [swarmpit]                                         # joignable uniquement par Swarmpit
     deploy:
       placement:
-        constraints: [node.role == manager]
+        constraints: [node.role == manager]                      # toujours sur le manager
 
 networks:
-  frontend:
+  frontend:                                                      # nginx <-> WordPress
+    driver: overlay                                              # réseau partagé entre les VM
+  backend:                                                       # WordPress <-> MariaDB
     driver: overlay
-  backend:
-    driver: overlay
-    internal: true
-  swarmpit:
+    internal: true                                               # pas d'accès Internet
+  swarmpit:                                                      # Swarmpit <-> CouchDB
     driver: overlay
 
 volumes:
-  db_data:
-  swarmpit_db:
-  wp_data:
+  db_data:                                                       # données MariaDB
+  swarmpit_db:                                                   # données Swarmpit
+  wp_data:                                                       # code WordPress partagé entre les nœuds
     driver_opts:
-      type: nfs
-      o: "addr=192.168.122.10,rw,nfsvers=4"
-      device: ":/srv/nfs/wordpress"
+      type: nfs                                                  # monté en NFS
+      o: "addr=192.168.122.10,rw,nfsvers=4"                      # serveur NFS = manager, lecture/écriture
+      device: ":/srv/nfs/wordpress"                              # dossier partagé sur le manager
 
 secrets:
-  db_password:
-    external: true
-  db_root_password:
+  db_password:                                                   # mot de passe de l'utilisateur wordpress
+    external: true                                               # créé avant avec "docker secret create"
+  db_root_password:                                              # mot de passe root de MariaDB
     external: true
 
 configs:
-  nginx_conf:
-    file: ./nginx/default.conf
+  nginx_conf:                                                    # configuration de nginx
+    file: ./nginx/default.conf                                   # fichier envoyé dans le Swarm
