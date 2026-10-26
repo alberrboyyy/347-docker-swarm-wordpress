@@ -23,7 +23,8 @@ services:
       WORDPRESS_DB_NAME: wordpress                               # base à utiliser
       WORDPRESS_DB_USER: wordpress                               # utilisateur de la base
       WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password       # mot de passe lu depuis le secret
-    secrets: [db_password]                                       # seul secret nécessaire à WordPress
+      WORDPRESS_CONFIG_EXTRA: define('AUTOMATIC_UPDATER_DISABLED', true);  # bloque les mises à jour auto
+    secrets: [db_password]                                     # seul secret nécessaire à WordPress
     volumes:
       - wp_data:/var/www/html                                    # code + médias, partagés en NFS
     networks: [frontend, backend]                                # reçoit nginx, parle à la base
