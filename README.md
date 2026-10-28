@@ -7,19 +7,26 @@ WordPress hautement disponible sur Docker Swarm.
 | Service | Image | Placement |
 |---|---|---|
 | `db` | `mariadb:12.0.2` | manager |
-| `wordpress` | `wordpress:6.8.2-fpm-alpine` | 2 répliques, 1 par worker |
-| `nginx` | `nginx:1.28.0-alpine3.21` | 2 répliques, port 80 |
-| `swarmpit` + `swarmpit-db` | `swarmpit/swarmpit`, `treehouses/couchdb:2.3.1` | manager, port 888 |
+| `wordpress` | `wordpress:6.8.2-fpm-alpine` | 1/2 répliques par worker |
+| `nginx` | `nginx:1.28.0-alpine3.21` | 1/2 répliques par nœud |
+| `swarmpit` | `swarmpit/swarmpit:1.9` | manager |
+| `swarmpit-db` | `couchdb:2.3.1` | manager |
 
 - Réseaux overlay : `frontend`, `backend`, `swarmpit`
 - Volumes : `db_data`, `wp_data`, `swarmpit_db`
 - Secrets : `db_password`, `db_root_password`
 
-> MariaDB 12.0.1 n'existe qu'en release candidate (`12.0.1-rc`) sur Docker Hub, d'où la 12.0.2.
+### Écarts et choix à connaître
+
+- **MariaDB 12.0.2 au lieu de 12.0.1** : la 12.0.1 n'existe sur Docker Hub qu'en release candidate. La 12.0.2 est la première version stable de la branche 12.0.
+
+### Limites connues
+
+- **Le manager est un point de défaillance unique** : MariaDB, le serveur NFS et Swarmpit y sont placés. Si le manager tombe, le site s'arrête. La tolérance aux pannes couvre la perte d'un worker, pas celle du manager.
 
 ## Prérequis
 
-- 3 VM Linux Apline-virt avec Docker installé, qui se joignent en réseau. Dans ce document :
+- 3 VM Linux Alpine-virt qui se joignent en réseau. Dans ce document :
 
   | VM | IP |
   |---|---|
@@ -27,11 +34,22 @@ WordPress hautement disponible sur Docker Swarm.
   | swarm-worker1 | 192.168.122.11 |
   | swarm-worker2 | 192.168.122.12 |
 
-  Si l'IP du manager est différente, la modifier dans `docker-compose.yml`.
+  Si l'IP du manager est différente, la modifier dans `docker-compose.yml` et dans les commandes ci-dessous.
+
+- Sur **chaque VM**, Docker installé et démarré :
+
+  ```sh
+  apk add docker
+  rc-update add docker default
+  rc-service docker start
+  docker version
+  ```
 
 ## 1. Partage NFS
 
 Le volume `wp_data` est monté en NFS par tous les nœuds pour que les répliques partagent le même code et les mêmes médias.
+
+#### Sur le manager :
 
 ```sh
 apk add nfs-utils
@@ -41,11 +59,25 @@ rc-update add nfs && rc-service nfs start
 exportfs -v
 ```
 
+`no_root_squash` est nécessaire : l'entrypoint de l'image WordPress copie les fichiers puis change leur propriétaire, ce qu'un export avec `root_squash` refuserait. L'export est limité au réseau `192.168.122.0/24`.
+
+#### Sur chaque worker :
+
+```sh
+apk add nfs-utils
+```
+
+Test depuis les worker :
+
+```sh
+mount -t nfs4 192.168.122.10:/ /mnt && ls /mnt && umount /mnt
+```
+
 ## 2. Créer le cluster Swarm
 
 Sur le manager :
 ```sh
-docker swarm init --advertise-addr 192.168.122.10
+docker swarm init
 ```
 
 Copier la commande `docker swarm join ...` affichée et l'exécuter sur les deux workers :
@@ -84,9 +116,9 @@ Pour utiliser le nom de domaine, ajouter dans le fichier hosts du PC client (`/e
 ```
 puis ouvrir http://www.my-wordpress.ch.
 
-## 6. Supprimer totalement la stack et ses volumes
+## 5. Supprimer totalement la stack et ses volumes
 
-Sur le manager :
+#### Sur le manager :
 ```sh
 docker stack rm wordpress
 sleep 20
@@ -96,7 +128,7 @@ docker secret rm db_password db_root_password
 rm -rf /srv/nfs/wordpress/* /srv/nfs/wordpress/.htaccess
 ```
 
-Sur chaque worker :
+#### Sur chaque worker :
 ```sh
 docker container prune -f
 docker volume rm wordpress_wp_data

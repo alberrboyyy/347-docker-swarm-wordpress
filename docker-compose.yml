@@ -11,7 +11,15 @@ services:
     volumes:
       - db_data:/var/lib/mysql                                   # données persistantes de la base
     networks: [backend]                                          # accessible uniquement par WordPress
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]  # script fourni par l'image officielle
+      interval: 30s                                              # fréquence du test
+      timeout: 5s                                                # durée max d'un test
+      retries: 3                                                 # échecs consécutifs avant "unhealthy"
+      start_period: 60s                                          # délai de grâce à l'initialisation
     deploy:
+      restart_policy:
+        condition: any                                           # Swarm relance toujours le conteneur
       placement:
         constraints: [node.role == manager]                      # toujours sur le manager (volume local)
 
@@ -24,12 +32,18 @@ services:
       WORDPRESS_DB_USER: wordpress                               # utilisateur de la base
       WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password       # mot de passe lu depuis le secret
       WORDPRESS_CONFIG_EXTRA: define('AUTOMATIC_UPDATER_DISABLED', true);  # bloque les mises à jour auto
-    secrets: [db_password]                                     # seul secret nécessaire à WordPress
+    secrets: [db_password]                                       # seul secret nécessaire à WordPress
     volumes:
       - wp_data:/var/www/html                                    # code + médias, partagés en NFS
     networks: [frontend, backend]                                # reçoit nginx, parle à la base
     deploy:
       replicas: 2                                                # 2 instances pour la tolérance aux pannes
+      restart_policy:
+        condition: any                                           # relance automatique en cas d'arrêt
+        delay: 5s                                                # pause avant chaque relance (la base peut ne pas être prête)
+      update_config:
+        parallelism: 1                                           # mise à jour d'une réplique à la fois
+        delay: 10s                                               # pause entre deux répliques : le site reste en ligne
       placement:
         constraints: [node.role == worker]                       # uniquement sur les workers
         max_replicas_per_node: 1                                 # une instance par worker
@@ -47,12 +61,17 @@ services:
     networks: [frontend]                                         # ne voit que WordPress
     deploy:
       replicas: 2                                                # 2 instances pour la disponibilité
+      restart_policy:
+        condition: any                                           # relance automatique en cas d'arrêt
+      update_config:
+        parallelism: 1                                           # mise à jour d'une réplique à la fois
+        delay: 10s                                               # pause entre deux répliques
       placement:
         max_replicas_per_node: 1                                 # sur 2 nœuds différents
 
-  # Swarmpit : interface web de visualisation du cluster
+  # Swarmpit
   swarmpit:
-    image: swarmpit/swarmpit:latest                              # interface Swarmpit
+    image: swarmpit/swarmpit:1.10                                # interface Swarmpit
     environment:
       SWARMPIT_DB: http://swarmpit-db:5984                       # adresse de sa base CouchDB
     volumes:
@@ -66,7 +85,7 @@ services:
 
   # Base de données de Swarmpit
   swarmpit-db:
-    image: treehouses/couchdb:2.3.1                              # CouchDB compatible ARM64
+    image: couchdb:2.3.1                                         # CouchDB 2.3.1
     volumes:
       - swarmpit_db:/opt/couchdb/data                            # données persistantes de Swarmpit
     networks: [swarmpit]                                         # joignable uniquement par Swarmpit
